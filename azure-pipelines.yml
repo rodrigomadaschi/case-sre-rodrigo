@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # ============================================================
 #  Azure DevOps Pipeline - Lagunitas (Refatorado)
 # ============================================================
@@ -184,3 +185,191 @@ stages:
               -d "$LOG" \
               "$(LOG_ANALYTICS_ENDPOINT)"
           displayName: "Emit Structured Log"
+=======
+# ============================================================
+#  Azure DevOps Pipeline - Lagunitas (Refatorado)
+# ============================================================
+
+trigger:
+  branches:
+    include:
+      - main
+
+variables:
+  - group: lagunitas-prd-vars
+  - name: artifactName
+    value: drop
+
+stages:
+
+# ============================================================
+# 1. BUILD
+# ============================================================
+- stage: Build
+  displayName: "Build Artifacts"
+  jobs:
+    - job: BuildJob
+      pool:
+        vmImage: 'ubuntu-latest'
+      steps:
+        - checkout: self
+
+        - script: |
+            echo "Validating notebook syntax..."
+            find ./notebooks -name '*.py' | xargs python -m py_compile
+          displayName: "Lint notebooks"
+
+        - publish: $(Build.ArtifactStagingDirectory)
+          artifact: $(artifactName)
+
+# ============================================================
+# 2. APPROVAL GATE
+# ============================================================
+- stage: ApprovalGate
+  displayName: "Manual Approval Before PRD"
+  dependsOn: Build
+  jobs:
+    - deployment: Approval
+      displayName: "Await PRD Approval"
+      environment: "prd-approval-env"
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+              - script: echo "Waiting for approval..."
+                displayName: "Approval Gate"
+
+# ============================================================
+# 3. DEPLOY TO PRD
+# ============================================================
+- stage: DeployPRD
+  displayName: "Deploy to PRD"
+  dependsOn: ApprovalGate
+  jobs:
+    - job: DeployJob
+      pool:
+        vmImage: 'ubuntu-latest'
+      steps:
+
+        - download: current
+          artifact: $(artifactName)
+
+        - task: AzureCLI@2
+          displayName: "Deploy Databricks Notebooks"
+          inputs:
+            azureSubscription: 'lagunitas-service-connection'
+            scriptType: bash
+            scriptLocation: inlineScript
+            inlineScript: |
+              echo "Deploying notebooks to PRD..."
+              databricks workspace import_dir ./notebooks /Shared/lagunitas \
+                --host $(DATABRICKS_HOST) \
+                --token $(DATABRICKS_TOKEN) \
+                --overwrite
+
+        - task: AzureResourceManagerTemplateDeployment@3
+          displayName: "Deploy ADF ARM Template"
+          inputs:
+            deploymentScope: 'Resource Group'
+            azureResourceManagerConnection: 'lagunitas-service-connection'
+            subscriptionId: $(SUBSCRIPTION_ID)
+            resourceGroupName: $(ADF_RESOURCE_GROUP)
+            location: 'Brazil South'
+            templateLocation: 'Linked artifact'
+            csmFile: '$(Pipeline.Workspace)/drop/adf/ARMTemplateForFactory.json'
+            csmParametersFile: '$(Pipeline.Workspace)/drop/adf/ARMTemplateParametersForFactory.json'
+            deploymentMode: 'Incremental'
+
+# ============================================================
+# 4. SMOKE TESTS
+# ============================================================
+- stage: SmokeTests
+  displayName: "Post-Deploy Smoke Tests"
+  dependsOn: DeployPRD
+  jobs:
+    - job: SmokeTestsJob
+      pool:
+        vmImage: 'ubuntu-latest'
+      steps:
+
+        - script: |
+            echo "Validating Databricks workspace..."
+            CURRENT_WS=$(databricks workspace ls --host $(DATABRICKS_HOST) --token $(DATABRICKS_TOKEN) | wc -l)
+            if [ $CURRENT_WS -lt 1 ]; then
+              echo "Workspace validation failed!"
+              exit 1
+            fi
+          displayName: "Validate Databricks Workspace"
+
+        - script: |
+            echo "Checking notebook path..."
+            databricks workspace ls /Shared/lagunitas \
+              --host $(DATABRICKS_HOST) \
+              --token $(DATABRICKS_TOKEN)
+          displayName: "Validate Notebook Path"
+
+        - script: |
+            echo "Checking Databricks job status..."
+            JOB_STATE=$(databricks jobs get --job-id $(DBR_JOB_ID) \
+              --host $(DATABRICKS_HOST) \
+              --token $(DATABRICKS_TOKEN) | jq -r '.settings.schedule')
+            if [ "$JOB_STATE" == "null" ]; then
+              echo "Job is not active!"
+              exit 1
+            fi
+          displayName: "Validate Databricks Job"
+
+        - task: AzureCLI@2
+          displayName: "Validate ADF Pipelines"
+          inputs:
+            azureSubscription: 'lagunitas-service-connection'
+            scriptType: bash
+            scriptLocation: inlineScript
+            inlineScript: |
+              echo "Checking ADF pipelines..."
+              az datafactory pipeline list \
+                --factory-name $(ADF_NAME) \
+                --resource-group $(ADF_RESOURCE_GROUP)
+
+        - task: AzureCLI@2
+          displayName: "Validate ADF Triggers"
+          inputs:
+            azureSubscription: 'lagunitas-service-connection'
+            scriptType: bash
+            scriptLocation: inlineScript
+            inlineScript: |
+              echo "Checking ADF triggers..."
+              az datafactory trigger list \
+                --factory-name $(ADF_NAME) \
+                --resource-group $(ADF_RESOURCE_GROUP)
+
+# ============================================================
+# 5. OBSERVABILITY
+# ============================================================
+- stage: Observability
+  displayName: "Structured Deploy Logging"
+  dependsOn: SmokeTests
+  jobs:
+    - job: LogJob
+      pool:
+        vmImage: 'ubuntu-latest'
+      steps:
+        - script: |
+            echo "Sending structured log to Log Analytics..."
+
+            LOG="{ \
+              \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \
+              \"commit\": \"$(Build.SourceVersion)\", \
+              \"environment\": \"PRD\", \
+              \"smokeTests\": \"passed\", \
+              \"mergedBy\": \"$(Build.RequestedFor)\" \
+            }"
+
+            echo $LOG
+
+            curl -X POST \
+              -H "Content-Type: application/json" \
+              -d "$LOG" \
+              "$(LOG_ANALYTICS_ENDPOINT)"
+          displayName: "Emit Structured Log"
+>>>>>>> 37bcfdc61b8336b68e04cb4a8804af18a2834482
