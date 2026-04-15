@@ -1,0 +1,115 @@
+name: Lagunitas CI (Mock)
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+
+  # ============================================================
+  # 1. BUILD
+  # ============================================================
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lint notebooks
+        run: |
+          echo "Validating notebook syntax..."
+          find ./notebooks -name '*.py' | xargs python -m py_compile || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: drop
+          path: .
+
+  # ============================================================
+  # 2. APPROVAL GATE (SIMULADO)
+  # ============================================================
+  approval:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Simulate manual approval
+        run: |
+          echo "=== APPROVAL GATE ==="
+          echo "Aprovação manual seria necessária no Azure DevOps."
+          echo "Continuando automaticamente no mock..."
+
+  # ============================================================
+  # 3. DEPLOY (MOCK)
+  # ============================================================
+  deploy:
+    runs-on: ubuntu-latest
+    needs: approval
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: drop
+
+      - name: Mock Databricks deploy
+        run: |
+          echo "Deploying notebooks to Databricks (mock)..."
+          echo "[MOCK] databricks workspace import_dir ./notebooks /Shared/lagunitas"
+
+      - name: Mock ADF deploy
+        run: |
+          echo "Deploying ADF ARM template (mock)..."
+          echo "[MOCK] az datafactory deployment"
+
+  # ============================================================
+  # 4. SMOKE TESTS (MOCK)
+  # ============================================================
+  smoke-tests:
+    runs-on: ubuntu-latest
+    needs: deploy
+    steps:
+      - name: Validate Databricks workspace
+        run: |
+          echo "[MOCK] Validating Databricks workspace..."
+          echo "Workspace OK"
+
+      - name: Validate notebook path
+        run: |
+          echo "[MOCK] Checking notebook path..."
+          echo "/Shared/lagunitas OK"
+
+      - name: Validate Databricks job
+        run: |
+          echo "[MOCK] Checking job status..."
+          echo "Job active"
+
+      - name: Validate ADF pipelines
+        run: |
+          echo "[MOCK] Checking ADF pipelines..."
+          echo "Pipelines enabled"
+
+      - name: Validate ADF triggers
+        run: |
+          echo "[MOCK] Checking ADF triggers..."
+          echo "Triggers active"
+
+  # ============================================================
+  # 5. OBSERVABILITY (MOCK)
+  # ============================================================
+  observability:
+    runs-on: ubuntu-latest
+    needs: smoke-tests
+    steps:
+      - name: Emit structured log
+        run: |
+          echo "Sending structured log..."
+          LOG="{ \
+            \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \
+            \"commit\": \"${{ github.sha }}\", \
+            \"environment\": \"PRD\", \
+            \"smokeTests\": \"passed\", \
+            \"mergedBy\": \"${{ github.actor }}\" \
+          }"
+          echo $LOG
+          echo "[MOCK] Log enviado para Log Analytics"
